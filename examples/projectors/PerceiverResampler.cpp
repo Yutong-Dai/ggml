@@ -271,20 +271,12 @@ static ggml_cgraph * build_graph(clip_ctx * ctx, ggml_tensor * img_embeddings, g
     const int q_len = self_latents->ne[1];
     const int kv_len = img_embeddings->ne[1] + self_latents->ne[1]; // concat img_embeddings and latents
     const int hidden_size = dim_head * num_head;
-    // // DEBUG: remove following three lines
-    // auto & layer = model.mm_model_layers[0];
-    // struct ggml_tensor * img_embeddings_normalized= ggml_norm(ctx0, img_embeddings, eps);
-    // img_embeddings_normalized = ggml_add(
-    //     ctx0, ggml_mul(ctx0, img_embeddings_normalized, layer.mm_model_ln_media_w), layer.mm_model_ln_media_b);
-
     // // DEBUG: remove later
     // n_layer = 2;
     ggml_tensor *latents = self_latents;
     ggml_tensor *ans;
     for (int il = 0; il < n_layer; ++il)
     {
-        // FIXME: This might be redundant, can be optimized since ggml_norm is not inplace
-        // struct ggml_tensor * img_embeddings_copy = ggml_dup_tensor(ctx0, img_embeddings);
         struct ggml_tensor * residual = latents;
         auto & layer = model.mm_model_layers[il];
         // layer norm
