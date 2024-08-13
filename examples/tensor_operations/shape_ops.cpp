@@ -82,7 +82,18 @@ int main(){
     ggml_graph_compute_with_ctx(ctx, gf, 1);
     print_tensor_3d(A_permute_cont, "A_permute_cont");
     print_mat(mat_2d, "mat_2d");
+    std::cout << mat_2d->type << GGML_TYPE_F32 << GGML_TYPE_F16 << std::endl;
 
+    struct ggml_tensor* all_one_tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 2, 3);
+    // set all elements to 1
+    // for (int i = 0; i < 6; i++)
+    // {
+    //     ((float*)all_one_tensor->data)[i] = 1.0;
+    // }
+    // std::fill((float*)all_one_tensor->data, (float*)all_one_tensor->data + 6, 1.0f);
+    std::fill_n((float*)all_one_tensor->data, 2 * 3, 1.0);
+    print_mat(all_one_tensor, "all_one_tensor");
+    std::cout << all_one_tensor->type << GGML_TYPE_F32  << std::endl;
     // const char *fname_cgraph = "shape_ops";
     // if (fname_cgraph) {
     //     // export the compute graph for later use
@@ -91,6 +102,39 @@ int main(){
     //     ggml_graph_export(gf, fname_cgraph);
     //     fprintf(stderr, "%s: exported compute graph to '%s'\n", __func__, fname_cgraph);
     // }
+
+    struct ggml_tensor* mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 1);
+    for (int i = 0; i < 4; i++)
+    {
+        if (i % 2 == 0)
+        {
+            ((float*)mask->data)[i] = 0.0;
+        }
+        else
+        {
+            ((float*)mask->data)[i] = 1.0;
+        }
+    }
+    print_mat(mask, "mask");
+
+    struct ggml_tensor* mask_not_with_neg_inf = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 1);
+    for (int i = 0; i < 4; i++)
+    {
+        if (((float*)mask->data)[i] == 0.0)
+        {
+            ((float*)mask_not_with_neg_inf->data)[i] = -INFINITY;
+        }else{
+            ((float*)mask_not_with_neg_inf->data)[i] = 0.0;
+        }
+    }
+    print_mat(mask_not_with_neg_inf, "mask_not_with_neg_inf");
+
+    struct ggml_tensor * attn_bias = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 10);
+    attn_bias = ggml_repeat(ctx, mask_not_with_neg_inf, attn_bias);
+    print_mat(attn_bias, "attn_bias");
+    ggml_build_forward_expand(gf, attn_bias);
+    ggml_graph_compute_with_ctx(ctx, gf, 1);
+    print_mat(attn_bias, "attn_bias");
 
     ggml_free(ctx);
     return 0;
