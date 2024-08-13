@@ -34,3 +34,7 @@ __pycache__/
 # Model files
 ggml-model-f16.bin
 *.bat
+examples/projectors/projector-f32.gguf
+examples/projectors/test_data/*
+examples/projectors/torch_input.pt
+examples/projectors/ggml_input.gguf

@@ -77,6 +77,41 @@ static struct ggml_tensor * get_tensor(struct ggml_context * ctx, const std::str
     return cur;
 }
 
+// void print_tensor(ggml_tensor * tensor, const char * name = "", int verbosity = 0){
+//     if (ggml_is_3d(tensor))
+//     {
+//         printf("---> %s: (%ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2]);
+//     }
+//     else{
+//         printf("---> %s: (%ld, %ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+//     }
+//     if (verbosity == 1){
+//         if (ggml_is_3d(tensor))
+//         {        
+//             printf("------------------only show up to  3*10*10 --------------------------\n");
+//             const float *data = (float *)tensor->data;
+//             int          dim0 = std::min(tensor->ne[2], static_cast<int64_t>(3));
+//             int          dim1 = std::min(tensor->ne[1], static_cast<int64_t>(10));
+//             int          dim2 = std::min(tensor->ne[0], static_cast<int64_t>(10));
+//             for (int i = 0; i < dim0; i++)
+//             {
+//                 printf("dim0 = %d\n", i);
+//                 for (int j = 0; j < dim1; j++)
+//                 {
+//                     for (int k = 0; k < dim2; k++)
+//                     {
+//                         printf("%+.4f ", data[i * dim1 * dim2 + j * dim2 + k]);
+//                     }
+//                     printf("\n");
+//                 }
+//                 printf("\n");
+//             }
+//             printf("\n");
+//         }
+//     }
+// }
+
+
 
 static std::string gguf_data_to_str(enum gguf_type type, const void * data, int i) {
     switch (type) {
@@ -153,33 +188,33 @@ static std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i) {
 struct xgenmm_perceiver_resampler_layer {
     // PerceiverAttention
     int dim=1152; 
-    int dim_head=16;
-    int heads=96;
-    int scale = std::pow(dim_head, -0.5);
-    struct ggml_tensor * k_w;
-    struct ggml_tensor * q_w;
-    struct ggml_tensor * v_w;
-    struct ggml_tensor * o_w;
-    struct ggml_tensor * ln_meida_w;
-    struct ggml_tensor * ln_meida_b;
-    struct ggml_tensor * ln_latents_w;
-    struct ggml_tensor * ln_latents_b;
+    int dim_head=96;
+    int heads=16;
+    float scale = std::pow(dim_head, -0.5);
+    struct ggml_tensor * mm_model_k_w;
+    struct ggml_tensor * mm_model_q_w;
+    struct ggml_tensor * mm_model_v_w;
+    struct ggml_tensor * mm_model_o_w;
+    struct ggml_tensor * mm_model_ln_media_w;
+    struct ggml_tensor * mm_model_ln_media_b;
+    struct ggml_tensor * mm_model_ln_latents_w;
+    struct ggml_tensor * mm_model_ln_latents_b;
 
     // Forward
     int mult = 4;
-    struct ggml_tensor * ffn_ln_w;
-    struct ggml_tensor * ffn_ln_b;
-    struct ggml_tensor * ffn_linear_up_w;
-    struct ggml_tensor * ffn_linear_down_w;
+    struct ggml_tensor * mm_model_ffn_ln_w;
+    struct ggml_tensor * mm_model_ffn_ln_b;
+    struct ggml_tensor * mm_model_ffn_linear_up_w;
+    struct ggml_tensor * mm_model_ffn_linear_down_w;
 };
 
 struct xgenmm_perceiver_resampler {
-    struct ggml_tensor * latents;
-    struct ggml_tensor * projection_w;
-    struct ggml_tensor * projection_b;    
-    std::vector<xgenmm_perceiver_resampler_layer> layers;
-    struct ggml_tensor * norm_w;
-    struct ggml_tensor * norm_b;
+    struct ggml_tensor * mm_model_latents;
+    struct ggml_tensor * mm_model_projection_w;
+    struct ggml_tensor * mm_model_projection_b;    
+    std::vector<xgenmm_perceiver_resampler_layer> mm_model_layers;
+    struct ggml_tensor * mm_model_norm_w;
+    struct ggml_tensor * mm_model_norm_b;
 };
 
 struct clip_ctx {
@@ -204,6 +239,132 @@ void clip_free(clip_ctx * ctx) {
     ggml_gallocr_free(ctx->compute_alloc);
     delete ctx;
 }
+
+static ggml_cgraph * build_graph(clip_ctx * ctx, ggml_tensor * img_embeddings, ggml_tensor * vision_attn_masks = nullptr){
+    const auto & model = ctx->perceiver_resampler;
+    // FIXME: hard coded for now
+    const float eps  = 1e-5;
+    // FIXME: hard coded for now
+    const int batch_size = 1;
+
+    struct ggml_init_params params = {
+        /*.mem_size   =*/ ctx->buf_compute_meta.size(),
+        /*.mem_buffer =*/ ctx->buf_compute_meta.data(),
+        /*.no_alloc   =*/ true,
+    };
+
+    LOG_TEE("%s: ctx->buf_compute_meta.size(): %zu \n", __func__, ctx->buf_compute_meta.size());
+    struct ggml_context * ctx0 = ggml_init(params);
+    struct ggml_cgraph * gf = ggml_new_graph(ctx0);
+
+    // computation starts here
+    struct ggml_tensor * self_latents = model.mm_model_latents;
+    // print_tensor(self_latents, "self_latents");
+    // print_tensor(img_embeddings, "img_embeddings");
+    
+    
+    // FIXME: hard coded for now
+    int n_layer = 6;
+    const float scale =  model.mm_model_layers[0].scale;
+    const int num_head = model.mm_model_layers[0].heads;
+    const int dim_head = model.mm_model_layers[0].dim_head;
+    const int q_len = self_latents->ne[1];
+    const int kv_len = img_embeddings->ne[1] + self_latents->ne[1]; // concat img_embeddings and latents
+    const int hidden_size = dim_head * num_head;
+    // // DEBUG: remove following three lines
+    // auto & layer = model.mm_model_layers[0];
+    // struct ggml_tensor * img_embeddings_normalized= ggml_norm(ctx0, img_embeddings, eps);
+    // img_embeddings_normalized = ggml_add(
+    //     ctx0, ggml_mul(ctx0, img_embeddings_normalized, layer.mm_model_ln_media_w), layer.mm_model_ln_media_b);
+
+    // // DEBUG: remove later
+    // n_layer = 2;
+    ggml_tensor *latents = self_latents;
+    ggml_tensor *ans;
+    for (int il = 0; il < n_layer; ++il)
+    {
+        // FIXME: This might be redundant, can be optimized since ggml_norm is not inplace
+        // struct ggml_tensor * img_embeddings_copy = ggml_dup_tensor(ctx0, img_embeddings);
+        struct ggml_tensor * residual = latents;
+        auto & layer = model.mm_model_layers[il];
+        // layer norm
+
+        struct ggml_tensor *img_embeddings_normalized  = ggml_norm(ctx0, img_embeddings, eps);
+        img_embeddings_normalized = ggml_add(
+            ctx0, ggml_mul(ctx0, img_embeddings_normalized, layer.mm_model_ln_media_w), layer.mm_model_ln_media_b);
+        
+        latents = ggml_norm(ctx0, latents, eps);
+        latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ln_latents_w),
+                                      layer.mm_model_ln_latents_b);
+
+        //cross attention
+        {
+            struct ggml_tensor *Q = ggml_mul_mat(ctx0, layer.mm_model_q_w, latents);
+            Q = ggml_scale_inplace(ctx0, Q, scale);
+            struct ggml_tensor *kv_inputs = ggml_concat(ctx0, img_embeddings_normalized, latents, 1);
+            // TODO: add attention mask
+            struct ggml_tensor * K = ggml_mul_mat(ctx0, layer.mm_model_k_w, kv_inputs);
+            struct ggml_tensor * V = ggml_mul_mat(ctx0, layer.mm_model_v_w, kv_inputs);
+            // permute
+            Q = ggml_reshape_4d(ctx0, Q, dim_head, num_head, q_len, batch_size);
+            Q = ggml_cont(ctx0, ggml_permute(ctx0, Q, 0, 2, 1, 3));
+            Q = ggml_reshape_3d(ctx0, Q, dim_head, q_len, num_head * batch_size);
+            
+            K = ggml_reshape_4d(ctx0, K, dim_head, num_head, kv_len, batch_size);
+            K = ggml_cont(ctx0, ggml_permute(ctx0, K, 0, 2, 1, 3));
+            K = ggml_reshape_3d(ctx0, K, dim_head, kv_len, num_head * batch_size);
+            
+            V = ggml_reshape_4d(ctx0, V, dim_head, num_head, kv_len, batch_size);
+            V = ggml_cont(ctx0, ggml_permute(ctx0, V, 1, 2, 0, 3));
+            V = ggml_reshape_3d(ctx0, V, kv_len, dim_head, num_head * batch_size);
+        
+            struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
+
+            // TODO: add attention mask
+
+            // ggml_soft_max_inplace use numerical stable softmax implementation
+            // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
+            KQ = ggml_soft_max_inplace(ctx0, KQ);
+
+            struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
+            KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
+            KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
+            KQV = ggml_cont_3d(ctx0, KQV, hidden_size, q_len, batch_size);
+
+            latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
+        }
+        // residual connection
+
+        latents = ggml_add(ctx0, latents, residual);
+        residual = latents;  // update residual
+
+        // FFN
+        {
+            // layer norm
+            latents = ggml_norm(ctx0, latents, eps);
+            latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ffn_ln_w),
+                                              layer.mm_model_ffn_ln_b);
+            // feed forward
+            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_up_w, latents);
+            latents = ggml_gelu_inplace(ctx0, latents);
+            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
+        }
+        
+        // residual connection
+        latents = ggml_add(ctx0, latents, residual);
+    }
+
+    // post layer norm
+    latents = ggml_norm(ctx0, latents, eps);
+    latents = ggml_add(ctx0, ggml_mul(ctx0, latents, model.mm_model_norm_w), model.mm_model_norm_b);
+    latents = ggml_add(ctx0, ggml_mul_mat(ctx0, model.mm_model_projection_w, latents), model.mm_model_projection_b);
+    ans = latents;
+    ggml_build_forward_expand(gf, ans);
+
+    ggml_free(ctx0);
+    return gf;
+}
+
 
 // read and create ggml_context containing the tensors and their data
 struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int verbosity = 1){
@@ -354,71 +515,279 @@ struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int 
 
     //load tensors into the model
     auto & perceiver_resampler = new_clip->perceiver_resampler;
-    perceiver_resampler.latents = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.latents");
-    perceiver_resampler.projection_w = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.projection.weight");
-    perceiver_resampler.projection_b = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.projection.bias");
+    perceiver_resampler.mm_model_latents = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.latents");
+    perceiver_resampler.mm_model_projection_w = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.projection.weight");
+    perceiver_resampler.mm_model_projection_b = ggml_get_tensor(new_clip->ctx_data, "perceiver_resampler.projection.bias");
     // FIXME: hard coded for now
     int n_layer = 6;
-    perceiver_resampler.layers.resize(n_layer);
+    perceiver_resampler.mm_model_layers.resize(n_layer);
     for (int il = 0; il < n_layer; ++il){
-        auto & layer = perceiver_resampler.layers[il];
-        layer.k_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_k", "weight"));
-        layer.q_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_q", "weight"));
-        layer.v_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_v", "weight"));
-        layer.o_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_out", "weight"));
-        layer.ln_meida_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_media", "weight"));
-        layer.ln_meida_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_media", "bias"));
-        layer.ln_latents_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_latents", "weight"));
-        layer.ln_latents_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_latents", "bias"));
-        layer.ffn_ln_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "ln", "weight"));
-        layer.ffn_ln_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "ln", "bias"));
-        layer.ffn_linear_up_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "linear_up", "weight"));
-        layer.ffn_linear_down_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "linear_down", "weight"));
+        auto & layer = perceiver_resampler.mm_model_layers[il];
+        layer.mm_model_k_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_k", "weight"));
+        layer.mm_model_q_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_q", "weight"));
+        layer.mm_model_v_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_v", "weight"));
+        layer.mm_model_o_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "to_out", "weight"));
+        layer.mm_model_ln_media_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_media", "weight"));
+        layer.mm_model_ln_media_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_media", "bias"));
+        layer.mm_model_ln_latents_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_latents", "weight"));
+        layer.mm_model_ln_latents_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_ATTN, il, "norm_latents", "bias"));
+        layer.mm_model_ffn_ln_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "ln", "weight"));
+        layer.mm_model_ffn_ln_b = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "ln", "bias"));
+        layer.mm_model_ffn_linear_up_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "linear_up", "weight"));
+        layer.mm_model_ffn_linear_down_w = get_tensor(new_clip->ctx_data, format(TN_XGENMM_FFN, il, "linear_down", "weight"));
     }
-    perceiver_resampler.norm_w = get_tensor(new_clip->ctx_data, "perceiver_resampler.ln.weight");
-    perceiver_resampler.norm_b = get_tensor(new_clip->ctx_data, "perceiver_resampler.ln.bias");
+    perceiver_resampler.mm_model_norm_w = get_tensor(new_clip->ctx_data, "perceiver_resampler.ln.weight");
+    perceiver_resampler.mm_model_norm_b = get_tensor(new_clip->ctx_data, "perceiver_resampler.ln.bias");
 
     ggml_free(meta);
 
     new_clip->ctx_gguf = ctx;
-    new_clip->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
+
+    // measure mem requirement and allocate
+    {
+        new_clip->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
+        new_clip->compute_alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(new_clip->backend));
+        // FIXME: hard coded for now
+        const int ctx_size = 1152 * 729 * 10;
+        struct ggml_init_params params {
+            /*.mem_size   =*/ ctx_size,
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc   =*/ false, // NOTE: this should be false when using the legacy API
+        };
+        struct ggml_context * ctx_temp = ggml_init(params);
+        ggml_tensor * temp = ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 1152, 729, 1, 1);
+        ggml_cgraph * gf = build_graph(new_clip, temp);
+        ggml_gallocr_reserve(new_clip->compute_alloc, gf);
+        size_t compute_memory_buffer_size = ggml_gallocr_get_buffer_size(new_clip->compute_alloc, 0);
+        LOG_TEE("%s: compute allocated memory: %.2f MB\n", __func__, compute_memory_buffer_size /1024.0/1024.0);
+        ggml_free(ctx_temp);
+    }
     return new_clip;
 }
 
-
-static ggml_cgraph * build_graph(clip_ctx * ctx, ggml_tensor * embeddings){
-    struct ggml_init_params params = {
-        /*.mem_size   =*/ ctx->buf_compute_meta.size(),
-        /*.mem_buffer =*/ ctx->buf_compute_meta.data(),
-        /*.no_alloc   =*/ true,
-    };
-
-    LOG_TEE("%s: ctx->buf_compute_meta.size(): %zu \n", __func__, ctx->buf_compute_meta.size());
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph(ctx0);
-
-
-
-    ggml_build_forward_expand(gf, embeddings);
-
-    ggml_free(ctx0);
-    return gf;
+void print_tensor(ggml_tensor *tensor, const char *name = "", int verbosity = 0)
+{
+    if (tensor->ne[2] == 1)
+    {
+        printf("---> %s: (%ld, %ld)\n", name, tensor->ne[0], tensor->ne[1]);
+    }
+    else if (ggml_is_3d(tensor))
+    {
+        printf("---> %s: (%ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2]);
+    }
+    else
+    {
+        printf("---> %s: (%ld, %ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    }
+    if (verbosity == 1)
+    {
+        printf("*********************************************************************\n");
+        if (tensor->ne[2] == 1)
+        {
+            const float *mat = (float *)tensor->data;
+            int          dim0 = tensor->ne[1];
+            int          dim1 = tensor->ne[0];
+            if (dim0 < 6 && dim1 < 6)
+            {
+                for (int i = 0; i < dim0; i++)
+                {
+                    for (int j = 0; j < dim1; j++)
+                    {
+                        printf("%+.4f ", mat[i * dim1 + j]);
+                    }
+                    printf("\n");
+                }
+                printf("\n");
+            }
+            else
+            {
+                for (int i = 0; i < std::min(dim0, 3); i++)
+                {
+                    for (int j = 0; j < std::min(dim1, 3); j++)
+                    {
+                        printf("%+.6f ", mat[i * dim1 + j]);
+                    }
+                    printf("... ");
+                    for (int j = dim1 - 3; j < dim1; j++)
+                    {
+                        printf("%+.6f ", mat[i * dim1 + j]);
+                    }
+                    printf("\n");
+                }
+                if (dim0 > 3){
+                    printf("...................... omit ......................\n");
+                    for (int i = dim0 - 3; i < dim0; i++)
+                    {
+                        for (int j = 0; j < std::min(dim1, 3); j++)
+                        {
+                            printf("%+.6f ", mat[i * dim1 + j]);
+                        }
+                        printf("... ");
+                        for (int j = dim1 - 3; j < dim1; j++)
+                        {
+                            printf("%+.6f ", mat[i * dim1 + j]);
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+        }
+        else if (ggml_is_3d(tensor))
+        {
+            const float *data = (float *)tensor->data;
+            int          dim0 = tensor->ne[2];
+            int          dim1 = tensor->ne[1];
+            int          dim2 = tensor->ne[0];
+            if (dim0 < 6 && dim1 < 6 && dim2 < 6)
+            {
+                for (int i = 0; i < dim0; i++)
+                {
+                    printf("dim0 = %d\n", i);
+                    for (int j = 0; j < dim1; j++)
+                    {
+                        for (int k = 0; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("\n");
+                }
+                printf("\n");
+            }
+            else
+            {
+                for (int i = 0; i < std::min(dim0, 3); i++)
+                {
+                    printf("dim0 = %d\n", i);
+                    for (int j = 0; j < std::min(dim1, 3); j++)
+                    {
+                        for (int k = 0; k < std::min(dim2, 3); k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("... ");
+                        for (int k = dim2 - 3; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("........................\n");
+                    for (int j = dim1 - 3; j < dim1; j++)
+                    {
+                        for (int k = 0; k < std::min(dim2, 3); k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("... ");
+                        for (int k = dim2 - 3; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("---------------------------------------------------\n");
+                }
+                printf("\n");
+            }
+        }
+    }
+    printf("*********************************************************************\n");
+    printf("\n");
 }
+struct tensor_from_gguf
+{
+    struct ggml_tensor  *data;
+    struct ggml_context *ctx;
+};
 
+bool load_tensor_from_file(const char *filename, tensor_from_gguf &tensor)
+{
+    struct gguf_init_params params = {
+        /*.no_alloc   =*/false,
+        /*.ctx        =*/&tensor.ctx,
+    };
+    gguf_context *ctx = gguf_init_from_file(filename, params);
+    if (!ctx)
+    {
+        fprintf(stderr, "%s: gguf_init_from_file() failed\n", __func__);
+        return false;
+    }
+    tensor.data = ggml_get_tensor(tensor.ctx, "data");
 
-
+    return true;
+}
 
 int main(){
     const char * fname = "/export/home/ggml/examples/projectors/projector-f32.gguf";
+    
     struct clip_ctx * ctx = xgenmm_perceiver_resampler_load(fname);
     if (!ctx) {
         LOG_TEE("failed to load model from %s\n", fname);
         return 1;
     }
-    ggml_tensor * embeddings = ggml_new_tensor_2d(ctx->ctx_data, GGML_TYPE_F32, 1, 1);
-    ggml_cgraph * gf = build_graph(ctx, embeddings);
+    // int bs = 1;
+    // ggml_tensor * image_embeddings = ggml_new_tensor_4d(ctx->ctx_data, GGML_TYPE_F32, 1152, 729, 1, bs);
+
+    std::string filename = "../examples/projectors/ggml_input.gguf";
+    tensor_from_gguf tensor;
+    bool is_successful = load_tensor_from_file(filename.c_str(), tensor);
+    if (!is_successful)
+    {
+        fprintf(stderr, "%s: load_tensor_from_file() failed\n", __func__);
+        return 1;
+    }
+    ggml_tensor * image_embeddings = tensor.data;
+    print_tensor(image_embeddings, "image_embeddings", 1);
+
+    ggml_cgraph *gf = build_graph(ctx, image_embeddings);
+    ggml_gallocr_alloc_graph(ctx->compute_alloc, gf);
+    ggml_backend_graph_compute(ctx->backend, gf);
+
+    const char *fname_cgraph = "perceiver_resampler";
+    if (fname_cgraph) {
+        // export the compute graph for later use
+        // see the "mnist-cpu" example
+        ggml_graph_dump_dot(gf, NULL, "perceiver_resampler.dot");
+        ggml_graph_export(gf, fname_cgraph);
+        fprintf(stderr, "%s: exported compute graph to '%s'\n", __func__, fname_cgraph);
+    }
+    printf("---> number of nodes: %d\n", gf->n_nodes);
+   
+
+    // print_tensor(gf->leafs[1], "image embeddings", 1);
+    // print_tensor(gf->nodes[0], "After layer_norm", 1);
+    // print_tensor(gf->leafs[1], "image embeddings", 1);
+    // print_tensor(gf->leafs[0], "latents", 1);
+    // print_tensor(gf->leafs[1], "ln_w", 1);
+    // print_tensor(gf->leafs[2], "ln_b", 1);
+    // print_tensor(gf->nodes[1], "latents After layer_norm", 1);
+    // print_tensor(gf->nodes[3], "Q before scale", 1);
+    // print_tensor(gf->nodes[4], "Q after scale", 1);
+    // print_tensor(gf->nodes[17], "pre-softmax", 1);
+    // print_tensor(gf->nodes[8], "q after reshape", 1);
+    // print_tensor(gf->leafs[1], "image embeddings", 1);
+    // print_tensor(gf->nodes[0], "After norm(mean, var)", 1);
+    // print_tensor(gf->nodes[2], "After layer_norm", 1);
+    // print_tensor(gf->nodes[18], "QK^T", 1);
+    // print_tensor(gf->nodes[19], "softmax", 1);
+    // print_tensor(gf->nodes[29], "outputs", 1);
+    // print_tensor(gf->nodes[30], "residula connection after attn", 1);
+    // print_tensor(gf->nodes[34], "linear up output", 1);
+    // print_tensor(gf->nodes[35], "gelu output", 1);
+    // print_tensor(gf->nodes[37], "residula connection after ffn", 1);
+    // print_tensor(gf->nodes[75], "residula connection after ffn (layer[1])", 1);
+    // print_tensor(gf->nodes[227], "residula connection after ffn (layer[5])", 1);
+    print_tensor(gf->nodes[232], "residula connection after ffn (layer[5])", 1);
+
+    // struct ggml_tensor * llm_inputs = gf->nodes[gf->n_nodes - 1];
+    // print_tensor(llm_inputs, "llm_inputs", 1);
+    clip_free(ctx);
+    ggml_free(tensor.ctx);
+    printf("Rememeber to revert ggml_bect_gelup_f32 in ggml.c after DEBUG\n");
     return 0;
 }
 
-
-// make perceiver_resampler -j8 && ./bin/perceiver_resampler
+// make perceiver_resampler -j8 && ./bin/perceiver_resampler 
+// make perceiver_resampler -j8 && ./bin/perceiver_resampler && dot -Tpng perceiver_resampler.dot > perceiver_resampler.png

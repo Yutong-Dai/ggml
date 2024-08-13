@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <iostream>
 
 void print_mat(ggml_tensor * tensor, const char * name = ""){
     const float * mat = (float *) tensor->data;
@@ -102,7 +103,8 @@ int main(){
     /*ggml_reshape_2d*/
     ggml_tensor * Amat_reshaped = ggml_reshape_2d(ctx, Amat, nrows, ncols);
     print_mat(Amat_reshaped, "A matrix reshaped");
-
+    // ggml_tensor * Amat_reshaped_cont = ggml_cont(ctx, ggml_reshape_2d(ctx, Amat, nrows, ncols));
+    // print_mat(Amat_reshaped_cont, "A matrix reshaped cont");
     /*ggml_mul_mat*/
     ggml_tensor * xvec = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ncols, 1);
     float x_data[nrows] = {1, 2};
@@ -128,6 +130,21 @@ int main(){
     ggml_build_forward_expand(gf, C);
     ggml_graph_compute_with_ctx(ctx, gf, 1);
     print_mat(C, "C matrix = A@B");
+
+    const int rows_Bp=2, cols_Bp=3;
+    ggml_tensor * Bpmat = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, cols_Bp, rows_Bp);
+    float Bp_data[cols_Bp * rows_Bp] = {
+        10, 9, 5,
+        5, 9, 4};
+    memcpy(Bpmat->data, Bp_data, cols_Bp * rows_Bp * ggml_type_size(GGML_TYPE_F32));
+    print_mat(Bpmat, "B' matrix");
+    ggml_tensor * Bp_transposed = ggml_reshape_2d(ctx, Bpmat, rows_Bp, cols_Bp);
+    print_mat(Bp_transposed, "B' matrix transposed");
+    ggml_tensor * Cp = ggml_mul_mat(ctx, Amat, ggml_cont(ctx, Bp_transposed));
+    ggml_build_forward_expand(gf, Cp);
+    ggml_graph_compute_with_ctx(ctx, gf, 1);
+    print_mat(Cp, "Cp matrix = A@(B')T");
+
 
     printf("Tensor level experiments:\n");
     std::string fname = "../examples/tensor_operations/data_gguf/3d_tensor.gguf";

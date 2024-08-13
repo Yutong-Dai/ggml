@@ -15,3 +15,7 @@
 set(TEST_TARGET learn_ggml_tensors)
 add_executable(${TEST_TARGET} learn_ggml_tensors.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml common)
+
+set(TEST_TARGET shape_ops)
+add_executable(${TEST_TARGET} shape_ops.cpp)
+target_link_libraries(${TEST_TARGET} PRIVATE ggml common)

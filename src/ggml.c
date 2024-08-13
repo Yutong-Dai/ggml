@@ -2281,28 +2281,33 @@ inline static void ggml_vec_gelu_f16(const int n, ggml_fp16_t * y, const ggml_fp
     }
 }
 
-#ifdef GGML_GELU_FP16
-inline static void ggml_vec_gelu_f32(const int n, float * y, const float * x) {
-    uint16_t t;
-    for (int i = 0; i < n; ++i) {
-        if (x[i] <= -10.0f) {
-            y[i] = 0.0f;
-        } else if (x[i] >= 10.0f) {
-            y[i] = x[i];
-        } else {
-            ggml_fp16_t fp16 = GGML_FP32_TO_FP16(x[i]);
-            memcpy(&t, &fp16, sizeof(uint16_t));
-            y[i] = GGML_FP16_TO_FP32(ggml_table_gelu_f16[t]);
-        }
-    }
-}
-#else
+// #ifdef GGML_GELU_FP16
+// inline static void ggml_vec_gelu_f32(const int n, float * y, const float * x) {
+//     uint16_t t;
+//     for (int i = 0; i < n; ++i) {
+//         if (x[i] <= -10.0f) {
+//             y[i] = 0.0f;
+//         } else if (x[i] >= 10.0f) {
+//             y[i] = x[i];
+//         } else {
+//             ggml_fp16_t fp16 = GGML_FP32_TO_FP16(x[i]);
+//             memcpy(&t, &fp16, sizeof(uint16_t));
+//             y[i] = GGML_FP16_TO_FP32(ggml_table_gelu_f16[t]);
+//         }
+//     }
+// }
+// #else
+// inline static void ggml_vec_gelu_f32(const int n, float * y, const float * x) {
+//     for (int i = 0; i < n; ++i) {
+//         y[i] = ggml_gelu_f32(x[i]);
+//     }
+// }
+// #endif
 inline static void ggml_vec_gelu_f32(const int n, float * y, const float * x) {
     for (int i = 0; i < n; ++i) {
         y[i] = ggml_gelu_f32(x[i]);
     }
 }
-#endif
 
 inline static float ggml_gelu_quick_f32(float x) {
     return x*(1.0f/(1.0f+expf(GELU_QUICK_COEF*x)));
