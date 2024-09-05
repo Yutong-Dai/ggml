@@ -30,20 +30,38 @@
 # gguf_writer.write_tensors_to_file()
 # gguf_writer.close()
 
+# import gguf
+# import numpy as np
+# import torch
+
+# # vision_attn_masks = torch.load('./test_data/vision_attn_masks.pt').numpy()
+# vision_attn_masks = torch.load('vision_attn_masks_bs_9.pt').numpy()
+# print(f'vision_attn_masks:{vision_attn_masks.shape}\n', vision_attn_masks)
+
+
+# # gguf_writer = gguf.GGUFWriter(path='vision_attn_masks.gguf', arch='vision_attn_masks')
+# gguf_writer = gguf.GGUFWriter(path='vision_attn_masks_bs_9.gguf', arch='vision_attn_masks')
+# gguf_writer.add_tensor("data", vision_attn_masks)
+# gguf_writer.write_header_to_file()
+# gguf_writer.write_kv_data_to_file()
+# gguf_writer.write_tensors_to_file()
+# gguf_writer.close()
+
 import gguf
 import numpy as np
 import torch
+np.set_printoptions(precision=4)
 
-vision_attn_masks = torch.load('./test_data/vision_attn_masks.pt').numpy()
-print(f'vision_attn_masks:{vision_attn_masks.shape}\n', vision_attn_masks)
-
-
-gguf_writer = gguf.GGUFWriter(path='vision_attn_masks.gguf', arch='vision_attn_masks')
-gguf_writer.add_tensor("data", vision_attn_masks)
+image_embed = torch.load('image_embed_bs_9.pt').numpy()
+print(f'image_embed:{image_embed.shape}\n', image_embed)
+gguf_writer = gguf.GGUFWriter(path='image_embed_bs_9.gguf', arch='image_embed_bs_9')
+gguf_writer.add_tensor("data", image_embed)
 gguf_writer.write_header_to_file()
 gguf_writer.write_kv_data_to_file()
 gguf_writer.write_tensors_to_file()
 gguf_writer.close()
+
+
 
 
 

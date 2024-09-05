@@ -246,7 +246,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
     // FIXME: hard coded for now
     const float eps  = 1e-5;
     // FIXME: hard coded for now
-    const int batch_size = 1;
+    const int batch_size = 9;
 
     struct ggml_init_params params = {
         /*.mem_size   =*/ ctx->buf_compute_meta.size(),
@@ -273,11 +273,10 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
     const int kv_len = img_embeddings->ne[1] + self_latents->ne[1]; // concat img_embeddings and latents
     const int hidden_size = dim_head * num_head;
     // DEBUG: remove later
-    // n_layer = 2;
-    // TODO: repeat for (batch_size, 1, n_query_tokens, dim)
+    n_layer = 1;
     ggml_tensor *latents = self_latents;
-
-
+    ggml_tensor *latents_repeat_along_batch = ggml_new_tensor_3d(ctx0, latents->type, latents->ne[0], latents->ne[1], batch_size);
+    latents = ggml_repeat(ctx0, latents, latents_repeat_along_batch);
 
     ggml_tensor *ans;
     for (int il = 0; il < n_layer; ++il)
@@ -294,22 +293,12 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
         latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ln_latents_w),
                                       layer.mm_model_ln_latents_b);
 
+
         //cross attention
         {
             struct ggml_tensor *Q = ggml_mul_mat(ctx0, layer.mm_model_q_w, latents);
             Q = ggml_scale_inplace(ctx0, Q, scale);
             struct ggml_tensor *kv_inputs = ggml_concat(ctx0, img_embeddings_normalized, latents, 1);
-            // if (vision_attn_masks){
-            //     // printf("vision_attn_masks dim0: %ld, dim1: %ld\n", vision_attn_masks->ne[0],
-            //     // vision_attn_masks->ne[1]); create all one tensor
-            //     const int dim0 = latents->ne[1];  // seq length
-            //     const int dim1 = batch_size;
-            //     struct ggml_tensor *all_one_tensor = ggml_new_tensor_2d(ctx0, latents->type, dim0, dim1);
-            //     ggml_set_name(all_one_tensor, "all_one_tensor");
-            //     ggml_set_input(all_one_tensor);
-
-            //     vision_attn_masks = ggml_concat(ctx0, vision_attn_masks, all_one_tensor, 0);
-            // }
             struct ggml_tensor * K = ggml_mul_mat(ctx0, layer.mm_model_k_w, kv_inputs);
             struct ggml_tensor * V = ggml_mul_mat(ctx0, layer.mm_model_v_w, kv_inputs);
             // permute
@@ -326,51 +315,50 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
             V = ggml_reshape_3d(ctx0, V, kv_len, dim_head, num_head * batch_size);
         
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
-
-            // Apply vision attention mask here.
-            // if (vision_attn_masks){
-            // }
+            
             if (attn_bias_input){
                 KQ = ggml_add(ctx0, KQ, attn_bias_input);
             };
+            ans = KQ;
+            // // ggml_soft_max_inplace use numerical stable softmax implementation
+            // // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
+            // KQ = ggml_soft_max_inplace(ctx0, KQ);
 
-            // ggml_soft_max_inplace use numerical stable softmax implementation
-            // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
-            KQ = ggml_soft_max_inplace(ctx0, KQ);
+            // struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
+            // KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
+            // KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
+            // KQV = ggml_cont_3d(ctx0, KQV, hidden_size, q_len, batch_size);
 
-            struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
-            KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
-            KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
-            KQV = ggml_cont_3d(ctx0, KQV, hidden_size, q_len, batch_size);
 
-            latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
-        }
-        // residual connection
-
-        latents = ggml_add(ctx0, latents, residual);
-        residual = latents;  // update residual
-
-        // FFN
-        {
-            // layer norm
-            latents = ggml_norm(ctx0, latents, eps);
-            latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ffn_ln_w),
-                                              layer.mm_model_ffn_ln_b);
-            // feed forward
-            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_up_w, latents);
-            latents = ggml_gelu_inplace(ctx0, latents);
-            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
+            // latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
         }
         
-        // residual connection
-        latents = ggml_add(ctx0, latents, residual);
+        // // residual connection
+
+        // latents = ggml_add(ctx0, latents, residual);
+        // residual = latents;  // update residual
+
+        // // FFN
+        // {
+        //     // layer norm
+        //     latents = ggml_norm(ctx0, latents, eps);
+        //     latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ffn_ln_w),
+        //                                       layer.mm_model_ffn_ln_b);
+        //     // feed forward
+        //     latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_up_w, latents);
+        //     latents = ggml_gelu_inplace(ctx0, latents);
+        //     latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
+        // }
+        
+        // // residual connection
+        // latents = ggml_add(ctx0, latents, residual);
     }
 
-    // post layer norm
-    latents = ggml_norm(ctx0, latents, eps);
-    latents = ggml_add(ctx0, ggml_mul(ctx0, latents, model.mm_model_norm_w), model.mm_model_norm_b);
-    latents = ggml_add(ctx0, ggml_mul_mat(ctx0, model.mm_model_projection_w, latents), model.mm_model_projection_b);
-    ans = latents;
+    // // post layer norm
+    // latents = ggml_norm(ctx0, latents, eps);
+    // latents = ggml_add(ctx0, ggml_mul(ctx0, latents, model.mm_model_norm_w), model.mm_model_norm_b);
+    // latents = ggml_add(ctx0, ggml_mul_mat(ctx0, model.mm_model_projection_w, latents), model.mm_model_projection_b);
+    // ans = latents;
     ggml_build_forward_expand(gf, ans);
 
     ggml_free(ctx0);
@@ -479,7 +467,6 @@ struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int 
             gguf_free(ctx);
             return nullptr;
         }
-
         auto fin = std::ifstream(fname, std::ios::binary);
         if (!fin) {
             LOG_TEE("cannot open model file for loading tensors\n");
@@ -559,7 +546,7 @@ struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int 
         new_clip->buf_compute_meta.resize(GGML_DEFAULT_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead());
         new_clip->compute_alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(new_clip->backend));
         // FIXME: hard coded for now
-        const int ctx_size = 1152 * 729 * 10;
+        const int ctx_size = 1152 * 729 * 10 * 9;
         struct ggml_init_params params {
             /*.mem_size   =*/ ctx_size,
             /*.mem_buffer =*/ NULL,
@@ -567,8 +554,11 @@ struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int 
         };
         struct ggml_context * ctx_temp = ggml_init(params);
         // FIXME: hard coded for now
-        ggml_tensor * temp_image_embedding = ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 1152, 729, 1, 1); // (dim, seq_len, bs)
-        ggml_tensor * temp_attn_bias_input = ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 857, 128, 1, 1); // (seq_len, bs)
+        int batch_size = 9;
+        ggml_tensor *temp_image_embedding =
+            ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 1152, 729, batch_size, 1);  // (dim, seq_len, bs)
+        ggml_tensor *temp_attn_bias_input =
+            ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 857, 128, batch_size, 1);  // (seq_len, bs)
         // ggml_tensor  *temp_vision_attn_masks = ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 729, 1, 1, 1); // (seq_len_image, bs)
         // ggml_tensor  *all_one_tensor = ggml_new_tensor_4d(ctx_temp, GGML_TYPE_F32, 128, 1, 1, 1); // (seq_len_query, bs)
         ggml_cgraph *gf = build_graph(new_clip, temp_image_embedding, temp_attn_bias_input);
@@ -711,6 +701,41 @@ void print_tensor(ggml_tensor *tensor, const char *name = "", int verbosity = 0)
     printf("*********************************************************************\n");
     printf("\n");
 }
+
+void tensor_to_csv_3d(ggml_tensor *tensor, const char *filename)
+{
+    std::ofstream outFile(filename);
+    if (!outFile.is_open())
+    {
+        std::cerr << "Error opening file!" << std::endl;
+    }
+    const float *data = (float *)tensor->data;
+    int          dim0 = tensor->ne[2];
+    int          dim1 = tensor->ne[1];
+    int          dim2 = tensor->ne[0];
+    {
+        for (int i = 0; i < dim0; i++)
+        {
+            for (int j = 0; j < dim1; j++)
+            {
+                for (int k = 0; k < dim2; k++)
+                {
+                    outFile << int(data[i * dim1 * dim2 + j * dim2 + k]);
+                    if (k < dim2 - 1)
+                    {
+                        outFile << ",";
+                    }
+                }
+                outFile << std::endl;
+            }
+            outFile << std::endl;
+        }
+    }
+
+    outFile.close();
+    printf("file saved to %s\n", filename);
+}
+
 struct tensor_from_gguf
 {
     struct ggml_tensor  *data;
@@ -734,6 +759,8 @@ bool load_tensor_from_file(const char *filename, tensor_from_gguf &tensor)
     return true;
 }
 
+
+
 int main(){
     const char * fname = "/export/home/ggml/examples/projectors/projector-f32.gguf";
 
@@ -746,7 +773,8 @@ int main(){
     // int bs = 1;
     // ggml_tensor * image_embeddings = ggml_new_tensor_4d(ctx->ctx_data, GGML_TYPE_F32, 1152, 729, 1, bs);
 
-    std::string filename = "../examples/projectors/ggml_input.gguf";
+    // std::string filename = "../examples/projectors/ggml_input.gguf";
+    std::string filename = "../examples/projectors/image_embed_bs_9.gguf";
     tensor_from_gguf tensor;
     bool is_successful = load_tensor_from_file(filename.c_str(), tensor);
     if (!is_successful)
@@ -758,7 +786,8 @@ int main(){
     print_tensor(image_embeddings, "image_embeddings", 1);
 
 
-    filename = "../examples/projectors/vision_attn_masks.gguf";
+    // filename = "../examples/projectors/vision_attn_masks.gguf";
+    filename = "../examples/projectors/vision_attn_masks_bs_9.gguf";
     is_successful = load_tensor_from_file(filename.c_str(), tensor);
     if (!is_successful)
     {
@@ -805,9 +834,12 @@ int main(){
 
         vision_attn_masks = ggml_concat(ctx0, vision_attn_masks, all_zero_tensor, 0);
         print_tensor(vision_attn_masks, "vision_attn_masks append with all 1 and negate", 1);
-        ggml_tensor *attn_bias =
-            ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, lantents_seq_length + vision_seq_length, lantents_seq_length);
+        ggml_tensor *attn_bias = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, lantents_seq_length + vision_seq_length,
+                                                    batch_size, lantents_seq_length);
+        print_tensor(attn_bias, "attn_bias", 0);
         attn_bias = ggml_repeat(ctx0, vision_attn_masks, attn_bias);
+        attn_bias = ggml_cont(ctx0, ggml_permute(ctx0, attn_bias, 0, 2, 1, 3));
+
         struct ggml_cgraph *gf_temp = ggml_new_graph(ctx0);
         ggml_build_forward_expand(gf_temp, attn_bias);
         ggml_graph_compute_with_ctx(ctx0, gf_temp, 1);
@@ -815,47 +847,10 @@ int main(){
     }
     print_tensor(attn_bias_input, "attn_bias_input", 1);
 
-    // const int ctx_size = 1024 * 1024;
-    // struct ggml_init_params params
-    // {
-    //     /*.mem_size   =*/ctx_size,
-    //         /*.mem_buffer =*/NULL,
-    //         /*.no_alloc   =*/false,  // NOTE: this should be false when using the legacy API
-    // };
-    // struct ggml_context *ctx2 = ggml_init(params);
-    // struct ggml_tensor  *all_one_tensor = ggml_new_tensor_2d(ctx2, GGML_TYPE_F16, 2, 3);
-    // std::fill_n((float *)all_one_tensor->data, 2 * 3, 1.0);
-    // print_tensor(all_one_tensor, "all_one_tensor", 1);
-    // ggml_free(ctx2);
+    // tensor_to_csv_3d(attn_bias_input, "/export/home/ggml/examples/projectors/attn_bias.csv");
 
     ggml_cgraph *gf = build_graph(ctx, image_embeddings, attn_bias_input);
     ggml_gallocr_alloc_graph(ctx->compute_alloc, gf);
-
-    // // set inputs
-    // if (vision_attn_masks)
-    // {
-    //     // printf("set inputs\n");
-    //     // for (int i = 0; i < gf->n_leafs; i++)
-    //     // {
-    //     //     struct ggml_tensor *leaf = gf->leafs[i];
-
-    //     //     printf("leaf->name: %s\n", leaf->name);    
-    //     // }
-    //     // for (int i = 0; i < gf->n_nodes; i++)
-    //     // {
-    //     //     struct ggml_tensor *node = gf->nodes[i];
-
-    //     //     printf("node->name: %s\n", node->name);
-    //     // }
-    //     struct ggml_tensor *all_one_tensor = ggml_graph_get_tensor(gf, "all_one_tensor");
-    //     float              *data = (float *)malloc(ggml_nbytes(all_one_tensor));
-    //     std::fill_n(data, ggml_nbytes(all_one_tensor) / sizeof(float), 1.0);
-    //     ggml_backend_tensor_set(all_one_tensor, data, 0, ggml_nbytes(all_one_tensor));
-    //     free(data);
-    //     print_tensor(all_one_tensor, "all_one_tensor", 1);
-    // }
-    
-
     ggml_backend_graph_compute(ctx->backend, gf);
 
     const char *fname_cgraph = "perceiver_resampler";
@@ -867,43 +862,25 @@ int main(){
         fprintf(stderr, "%s: exported compute graph to '%s'\n", __func__, fname_cgraph);
     }
     printf("---> number of nodes: %d\n", gf->n_nodes);
-   
+    // // before enter cross attn block; all is good
+    // print_tensor(gf->leafs[0], "lantents", 1);
+    // print_tensor(gf->nodes[0], "repeat lantents", 1);
+    // print_tensor(gf->nodes[3], "ln lantents", 1);
 
-    // print_tensor(gf->leafs[1], "image embeddings", 1);
-    // print_tensor(gf->nodes[0], "After layer_norm", 1);
-    // print_tensor(gf->leafs[1], "image embeddings", 1);
-    // print_tensor(gf->leafs[0], "latents", 1);
-    // print_tensor(gf->leafs[1], "ln_w", 1);
-    // print_tensor(gf->leafs[2], "ln_b", 1);
-    // print_tensor(gf->nodes[1], "latents After layer_norm", 1);
-    // print_tensor(gf->nodes[3], "Q before scale", 1);
-    // print_tensor(gf->nodes[4], "Q after scale", 1);
-    // print_tensor(gf->nodes[17], "pre-softmax", 1);
-    // print_tensor(gf->nodes[8], "q after reshape", 1);
-    // print_tensor(gf->leafs[1], "image embeddings", 1);
-    // print_tensor(gf->nodes[0], "After norm(mean, var)", 1);
-    // print_tensor(gf->nodes[2], "After layer_norm", 1);
-    // print_tensor(gf->nodes[18], "QK^T", 1);
-    // print_tensor(gf->nodes[19], "softmax", 1);
-    // print_tensor(gf->nodes[29], "outputs", 1);
-    // print_tensor(gf->nodes[30], "residula connection after attn", 1);
-    // print_tensor(gf->nodes[34], "linear up output", 1);
-    // print_tensor(gf->nodes[35], "gelu output", 1);
-    // print_tensor(gf->nodes[37], "residula connection after ffn", 1);
-    // print_tensor(gf->nodes[75], "residula connection after ffn (layer[1])", 1);
-    // print_tensor(gf->nodes[227], "residula connection after ffn (layer[5])", 1);
-    // print_tensor(gf->nodes[232], "residula connection after ffn (layer[5])", 1);
 
-    print_tensor(gf->nodes[240], "residula connection after ffn (layer[5])", 1);
+    // print_tensor(gf->leafs[5], "lantents", 1);
+    // print_tensor(gf->nodes[3], "repeta lantents", 1);
+    // print_tensor(gf->nodes[2], "ln(x)", 1);
+    // print_tensor(gf->nodes[6], "ln(latents)", 1);
 
-    // struct ggml_tensor * llm_inputs = gf->nodes[gf->n_nodes - 1];
-    // print_tensor(llm_inputs, "llm_inputs", 1);
+    struct ggml_tensor * llm_inputs = gf->nodes[gf->n_nodes - 1];
+    print_tensor(llm_inputs, "llm_inputs", 1);
     clip_free(ctx);
     ggml_free(tensor.ctx);
     if (ctx0){
         ggml_free(ctx0);
     }
-    printf("Rememeber to revert ggml_bect_gelup_f32 in ggml.c after DEBUG\n");
+    printf("Rememeber to revert ggml_vec_gelu_f32 in ggml.c after DEBUG\n");
     return 0;
 }
 
