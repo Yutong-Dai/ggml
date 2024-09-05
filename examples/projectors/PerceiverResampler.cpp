@@ -51,6 +51,139 @@
 //     { PROJECTOR_TYPE_PERCIVER_RESAMPLER, "PercevierResampler"},
 // };
 
+void print_tensor(ggml_tensor *tensor, const char *name = "", int verbosity = 0)
+{
+    if (tensor->ne[2] == 1)
+    {
+        printf("---> %s: (%ld, %ld)\n", name, tensor->ne[0], tensor->ne[1]);
+    }
+    else if (ggml_is_3d(tensor))
+    {
+        printf("---> %s: (%ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2]);
+    }
+    else
+    {
+        printf("---> %s: (%ld, %ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    }
+    if (verbosity == 1)
+    {
+        printf("*********************************************************************\n");
+        if (tensor->ne[2] == 1)
+        {
+            const float *mat = (float *)tensor->data;
+            int          dim0 = tensor->ne[1];
+            int          dim1 = tensor->ne[0];
+            if (dim0 < 6 && dim1 < 6)
+            {
+                for (int i = 0; i < dim0; i++)
+                {
+                    for (int j = 0; j < dim1; j++)
+                    {
+                        printf("%+.4f ", mat[i * dim1 + j]);
+                    }
+                    printf("\n");
+                }
+                printf("\n");
+            }
+            else
+            {
+                for (int i = 0; i < std::min(dim0, 3); i++)
+                {
+                    for (int j = 0; j < std::min(dim1, 3); j++)
+                    {
+                        printf("%+.6f ", mat[i * dim1 + j]);
+                    }
+                    printf("... ");
+                    for (int j = dim1 - 3; j < dim1; j++)
+                    {
+                        printf("%+.6f ", mat[i * dim1 + j]);
+                    }
+                    printf("\n");
+                }
+                if (dim0 > 3)
+                {
+                    printf("...................... omit ......................\n");
+                    for (int i = dim0 - 3; i < dim0; i++)
+                    {
+                        for (int j = 0; j < std::min(dim1, 3); j++)
+                        {
+                            printf("%+.6f ", mat[i * dim1 + j]);
+                        }
+                        printf("... ");
+                        for (int j = dim1 - 3; j < dim1; j++)
+                        {
+                            printf("%+.6f ", mat[i * dim1 + j]);
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+        }
+        else if (ggml_is_3d(tensor))
+        {
+            const float *data = (float *)tensor->data;
+            int          dim0 = tensor->ne[2];
+            int          dim1 = tensor->ne[1];
+            int          dim2 = tensor->ne[0];
+            if (dim0 < 6 && dim1 < 6 && dim2 < 6)
+            {
+                for (int i = 0; i < dim0; i++)
+                {
+                    printf("dim0 = %d\n", i);
+                    for (int j = 0; j < dim1; j++)
+                    {
+                        for (int k = 0; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("\n");
+                }
+                printf("\n");
+            }
+            else
+            {
+                for (int i = 0; i < std::min(dim0, 3); i++)
+                {
+                    printf("dim0 = %d\n", i);
+                    for (int j = 0; j < std::min(dim1, 3); j++)
+                    {
+                        for (int k = 0; k < std::min(dim2, 3); k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("... ");
+                        for (int k = dim2 - 3; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("........................\n");
+                    for (int j = dim1 - 3; j < dim1; j++)
+                    {
+                        for (int k = 0; k < std::min(dim2, 3); k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("... ");
+                        for (int k = dim2 - 3; k < dim2; k++)
+                        {
+                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
+                        }
+                        printf("\n");
+                    }
+                    printf("---------------------------------------------------\n");
+                }
+                printf("\n");
+            }
+        }
+    }
+    printf("*********************************************************************\n");
+    printf("\n");
+}
+
 static std::string format(const char * fmt, ...) {
     va_list ap;
     va_list ap2;
@@ -273,7 +406,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
     const int kv_len = img_embeddings->ne[1] + self_latents->ne[1]; // concat img_embeddings and latents
     const int hidden_size = dim_head * num_head;
     // DEBUG: remove later
-    n_layer = 1;
+    // n_layer = 1;
     ggml_tensor *latents = self_latents;
     ggml_tensor *latents_repeat_along_batch = ggml_new_tensor_3d(ctx0, latents->type, latents->ne[0], latents->ne[1], batch_size);
     latents = ggml_repeat(ctx0, latents, latents_repeat_along_batch);
@@ -315,50 +448,55 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
             V = ggml_reshape_3d(ctx0, V, kv_len, dim_head, num_head * batch_size);
         
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
-            
             if (attn_bias_input){
+                KQ = ggml_cont(ctx0, ggml_reshape_4d(ctx0, KQ, kv_len, q_len, num_head, batch_size));
+                attn_bias_input = ggml_cont(ctx0, ggml_reshape_4d(ctx0, attn_bias_input, kv_len, q_len, 1, batch_size));
+
                 KQ = ggml_add(ctx0, KQ, attn_bias_input);
+
+                KQ = ggml_cont(ctx0, ggml_reshape_3d(ctx0, KQ, kv_len, q_len, num_head * batch_size));
             };
-            ans = KQ;
-            // // ggml_soft_max_inplace use numerical stable softmax implementation
-            // // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
-            // KQ = ggml_soft_max_inplace(ctx0, KQ);
+            
+            // ggml_soft_max_inplace use numerical stable softmax implementation
+            // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
+            KQ = ggml_soft_max_inplace(ctx0, KQ);
 
-            // struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
-            // KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
-            // KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
-            // KQV = ggml_cont_3d(ctx0, KQV, hidden_size, q_len, batch_size);
+            struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
+            KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
+            KQV = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
+            KQV = ggml_cont_3d(ctx0, KQV, hidden_size, q_len, batch_size);
 
 
-            // latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
+            latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
         }
         
-        // // residual connection
-
-        // latents = ggml_add(ctx0, latents, residual);
-        // residual = latents;  // update residual
-
-        // // FFN
-        // {
-        //     // layer norm
-        //     latents = ggml_norm(ctx0, latents, eps);
-        //     latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ffn_ln_w),
-        //                                       layer.mm_model_ffn_ln_b);
-        //     // feed forward
-        //     latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_up_w, latents);
-        //     latents = ggml_gelu_inplace(ctx0, latents);
-        //     latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
-        // }
         
-        // // residual connection
-        // latents = ggml_add(ctx0, latents, residual);
+        // residual connection
+
+        latents = ggml_add(ctx0, latents, residual);
+        residual = latents;  // update residual
+
+        // FFN
+        {
+            // layer norm
+            latents = ggml_norm(ctx0, latents, eps);
+            latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ffn_ln_w),
+                                              layer.mm_model_ffn_ln_b);
+            // feed forward
+            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_up_w, latents);
+            latents = ggml_gelu_inplace(ctx0, latents);
+            latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
+        }
+        
+        // residual connection
+        latents = ggml_add(ctx0, latents, residual);
     }
 
-    // // post layer norm
-    // latents = ggml_norm(ctx0, latents, eps);
-    // latents = ggml_add(ctx0, ggml_mul(ctx0, latents, model.mm_model_norm_w), model.mm_model_norm_b);
-    // latents = ggml_add(ctx0, ggml_mul_mat(ctx0, model.mm_model_projection_w, latents), model.mm_model_projection_b);
-    // ans = latents;
+    // post layer norm
+    latents = ggml_norm(ctx0, latents, eps);
+    latents = ggml_add(ctx0, ggml_mul(ctx0, latents, model.mm_model_norm_w), model.mm_model_norm_b);
+    latents = ggml_add(ctx0, ggml_mul_mat(ctx0, model.mm_model_projection_w, latents), model.mm_model_projection_b);
+    ans = latents;
     ggml_build_forward_expand(gf, ans);
 
     ggml_free(ctx0);
@@ -570,137 +708,7 @@ struct clip_ctx * xgenmm_perceiver_resampler_load(const char * fname, const int 
     return new_clip;
 }
 
-void print_tensor(ggml_tensor *tensor, const char *name = "", int verbosity = 0)
-{
-    if (tensor->ne[2] == 1)
-    {
-        printf("---> %s: (%ld, %ld)\n", name, tensor->ne[0], tensor->ne[1]);
-    }
-    else if (ggml_is_3d(tensor))
-    {
-        printf("---> %s: (%ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2]);
-    }
-    else
-    {
-        printf("---> %s: (%ld, %ld, %ld, %ld)\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
-    }
-    if (verbosity == 1)
-    {
-        printf("*********************************************************************\n");
-        if (tensor->ne[2] == 1)
-        {
-            const float *mat = (float *)tensor->data;
-            int          dim0 = tensor->ne[1];
-            int          dim1 = tensor->ne[0];
-            if (dim0 < 6 && dim1 < 6)
-            {
-                for (int i = 0; i < dim0; i++)
-                {
-                    for (int j = 0; j < dim1; j++)
-                    {
-                        printf("%+.4f ", mat[i * dim1 + j]);
-                    }
-                    printf("\n");
-                }
-                printf("\n");
-            }
-            else
-            {
-                for (int i = 0; i < std::min(dim0, 3); i++)
-                {
-                    for (int j = 0; j < std::min(dim1, 3); j++)
-                    {
-                        printf("%+.6f ", mat[i * dim1 + j]);
-                    }
-                    printf("... ");
-                    for (int j = dim1 - 3; j < dim1; j++)
-                    {
-                        printf("%+.6f ", mat[i * dim1 + j]);
-                    }
-                    printf("\n");
-                }
-                if (dim0 > 3){
-                    printf("...................... omit ......................\n");
-                    for (int i = dim0 - 3; i < dim0; i++)
-                    {
-                        for (int j = 0; j < std::min(dim1, 3); j++)
-                        {
-                            printf("%+.6f ", mat[i * dim1 + j]);
-                        }
-                        printf("... ");
-                        for (int j = dim1 - 3; j < dim1; j++)
-                        {
-                            printf("%+.6f ", mat[i * dim1 + j]);
-                        }
-                        printf("\n");
-                    }
-                }
-            }
-        }
-        else if (ggml_is_3d(tensor))
-        {
-            const float *data = (float *)tensor->data;
-            int          dim0 = tensor->ne[2];
-            int          dim1 = tensor->ne[1];
-            int          dim2 = tensor->ne[0];
-            if (dim0 < 6 && dim1 < 6 && dim2 < 6)
-            {
-                for (int i = 0; i < dim0; i++)
-                {
-                    printf("dim0 = %d\n", i);
-                    for (int j = 0; j < dim1; j++)
-                    {
-                        for (int k = 0; k < dim2; k++)
-                        {
-                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
-                        }
-                        printf("\n");
-                    }
-                    printf("\n");
-                }
-                printf("\n");
-            }
-            else
-            {
-                for (int i = 0; i < std::min(dim0, 3); i++)
-                {
-                    printf("dim0 = %d\n", i);
-                    for (int j = 0; j < std::min(dim1, 3); j++)
-                    {
-                        for (int k = 0; k < std::min(dim2, 3); k++)
-                        {
-                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
-                        }
-                        printf("... ");
-                        for (int k = dim2 - 3; k < dim2; k++)
-                        {
-                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
-                        }
-                        printf("\n");
-                    }
-                    printf("........................\n");
-                    for (int j = dim1 - 3; j < dim1; j++)
-                    {
-                        for (int k = 0; k < std::min(dim2, 3); k++)
-                        {
-                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
-                        }
-                        printf("... ");
-                        for (int k = dim2 - 3; k < dim2; k++)
-                        {
-                            printf("%+.6f ", data[i * dim1 * dim2 + j * dim2 + k]);
-                        }
-                        printf("\n");
-                    }
-                    printf("---------------------------------------------------\n");
-                }
-                printf("\n");
-            }
-        }
-    }
-    printf("*********************************************************************\n");
-    printf("\n");
-}
+
 
 void tensor_to_csv_3d(ggml_tensor *tensor, const char *filename)
 {
