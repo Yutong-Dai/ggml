@@ -47,14 +47,28 @@
 # gguf_writer.write_tensors_to_file()
 # gguf_writer.close()
 
+# import gguf
+# import numpy as np
+# import torch
+# np.set_printoptions(precision=4)
+
+# image_embed = torch.load('image_embed_bs_9.pt').numpy()
+# print(f'image_embed:{image_embed.shape}\n', image_embed)
+# gguf_writer = gguf.GGUFWriter(path='image_embed_bs_9.gguf', arch='image_embed_bs_9')
+# gguf_writer.add_tensor("data", image_embed)
+# gguf_writer.write_header_to_file()
+# gguf_writer.write_kv_data_to_file()
+# gguf_writer.write_tensors_to_file()
+# gguf_writer.close()
+
 import gguf
 import numpy as np
 import torch
 np.set_printoptions(precision=4)
 
-image_embed = torch.load('image_embed_bs_9.pt').numpy()
+image_embed = torch.load('image_embed_bs_9_cpu.pt').numpy()
 print(f'image_embed:{image_embed.shape}\n', image_embed)
-gguf_writer = gguf.GGUFWriter(path='image_embed_bs_9.gguf', arch='image_embed_bs_9')
+gguf_writer = gguf.GGUFWriter(path='image_embed_bs_9_cpu.gguf', arch='image_embed_bs_9')
 gguf_writer.add_tensor("data", image_embed)
 gguf_writer.write_header_to_file()
 gguf_writer.write_kv_data_to_file()

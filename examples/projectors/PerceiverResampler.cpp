@@ -406,7 +406,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
     const int kv_len = img_embeddings->ne[1] + self_latents->ne[1]; // concat img_embeddings and latents
     const int hidden_size = dim_head * num_head;
     // DEBUG: remove later
-    // n_layer = 1;
+    n_layer = 6;
     ggml_tensor *latents = self_latents;
     ggml_tensor *latents_repeat_along_batch = ggml_new_tensor_3d(ctx0, latents->type, latents->ne[0], latents->ne[1], batch_size);
     latents = ggml_repeat(ctx0, latents, latents_repeat_along_batch);
@@ -421,12 +421,9 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
         struct ggml_tensor *img_embeddings_normalized  = ggml_norm(ctx0, img_embeddings, eps);
         img_embeddings_normalized = ggml_add(
             ctx0, ggml_mul(ctx0, img_embeddings_normalized, layer.mm_model_ln_media_w), layer.mm_model_ln_media_b);
-        
         latents = ggml_norm(ctx0, latents, eps);
         latents = ggml_add(ctx0, ggml_mul(ctx0, latents, layer.mm_model_ln_latents_w),
                                       layer.mm_model_ln_latents_b);
-
-
         //cross attention
         {
             struct ggml_tensor *Q = ggml_mul_mat(ctx0, layer.mm_model_q_w, latents);
@@ -439,6 +436,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
             Q = ggml_cont(ctx0, ggml_permute(ctx0, Q, 0, 2, 1, 3));
             Q = ggml_reshape_3d(ctx0, Q, dim_head, q_len, num_head * batch_size);
             
+            
             K = ggml_reshape_4d(ctx0, K, dim_head, num_head, kv_len, batch_size);
             K = ggml_cont(ctx0, ggml_permute(ctx0, K, 0, 2, 1, 3));
             K = ggml_reshape_3d(ctx0, K, dim_head, kv_len, num_head * batch_size);
@@ -448,6 +446,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
             V = ggml_reshape_3d(ctx0, V, kv_len, dim_head, num_head * batch_size);
         
             struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
+        
             if (attn_bias_input){
                 KQ = ggml_cont(ctx0, ggml_reshape_4d(ctx0, KQ, kv_len, q_len, num_head, batch_size));
                 attn_bias_input = ggml_cont(ctx0, ggml_reshape_4d(ctx0, attn_bias_input, kv_len, q_len, 1, batch_size));
@@ -456,10 +455,11 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
 
                 KQ = ggml_cont(ctx0, ggml_reshape_3d(ctx0, KQ, kv_len, q_len, num_head * batch_size));
             };
-            
+
             // ggml_soft_max_inplace use numerical stable softmax implementation
             // ggml_soft_max_inplace(ctx0, KQ) =  (sim - sim.amax(dim=-1, keepdim=True).detach()).softmax(dim=-1)
             KQ = ggml_soft_max_inplace(ctx0, KQ);
+
 
             struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ);
             KQV = ggml_reshape_4d(ctx0, KQV, dim_head, q_len, num_head, batch_size);
@@ -469,8 +469,8 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
 
             latents = ggml_mul_mat(ctx0, layer.mm_model_o_w, KQV);
         }
-        
-        
+        ans = latents;
+
         // residual connection
 
         latents = ggml_add(ctx0, latents, residual);
@@ -488,6 +488,7 @@ static ggml_cgraph *build_graph(clip_ctx *ctx, ggml_tensor *img_embeddings, ggml
             latents = ggml_mul_mat(ctx0, layer.mm_model_ffn_linear_down_w, latents);
         }
         
+
         // residual connection
         latents = ggml_add(ctx0, latents, residual);
     }
@@ -782,7 +783,7 @@ int main(){
     // ggml_tensor * image_embeddings = ggml_new_tensor_4d(ctx->ctx_data, GGML_TYPE_F32, 1152, 729, 1, bs);
 
     // std::string filename = "../examples/projectors/ggml_input.gguf";
-    std::string filename = "../examples/projectors/image_embed_bs_9.gguf";
+    std::string filename = "../examples/projectors/image_embed_bs_9_cpu.gguf";
     tensor_from_gguf tensor;
     bool is_successful = load_tensor_from_file(filename.c_str(), tensor);
     if (!is_successful)
